@@ -1,0 +1,1622 @@
+<script>
+  // Update the badge to reflect spreadsheet connection and schema state.
+  function showConnectionStatus(state, message) {
+    var status = document.getElementById('connection-status');
+    var label = document.getElementById('connection-label');
+
+    status.classList.remove('is-connected', 'is-error', 'is-loading');
+    status.classList.add(state);
+    label.textContent = message;
+  }
+
+  // Render only diagnostic metadata; never request or display spreadsheet records.
+  function renderSpreadsheetDiagnostic(diagnostic) {
+    var title = document.getElementById('status-title');
+    var message = document.getElementById('diagnostic-message');
+    var results = document.getElementById('schema-results');
+
+    results.textContent = '';
+    results.setAttribute('aria-busy', 'false');
+
+    if (!diagnostic) {
+      showConnectionStatus('is-error', 'Diagnostic unavailable');
+      title.textContent = 'Spreadsheet check could not finish.';
+      message.textContent = 'The server returned no diagnostic. Try reloading the dashboard.';
+      return;
+    }
+
+    if (diagnostic.status !== 'connected') {
+      showConnectionStatus('is-error', diagnostic.status === 'not_configured' ? 'Spreadsheet not configured' : 'Spreadsheet unavailable');
+      title.textContent = diagnostic.status === 'not_configured' ? 'Spreadsheet setup is required.' : 'Spreadsheet connection failed.';
+      message.textContent = diagnostic.message || 'Check the spreadsheet configuration and access, then reload.';
+    } else {
+      showConnectionStatus('is-connected', diagnostic.schemaValid ? 'Sheets connected' : 'Schema needs attention');
+      title.textContent = diagnostic.schemaValid ? 'Spreadsheet setup is ready.' : 'Spreadsheet connected; review the schema.';
+      message.textContent = diagnostic.message || 'Spreadsheet diagnostic completed.';
+    }
+
+    (diagnostic.tabs || []).forEach(function (tab) {
+      var item = document.createElement('li');
+      var heading = document.createElement('strong');
+      var detail = document.createElement('span');
+
+      item.className = tab.valid ? 'schema-item is-valid' : 'schema-item is-invalid';
+      heading.textContent = tab.name + (tab.present ? '' : ' (missing)');
+      var headerSummary = tab.headers && tab.headers.length ? tab.headers.join(' · ') : '';
+      detail.textContent = tab.error
+        ? tab.error + (headerSummary ? ' Headers: ' + headerSummary : '')
+        : (headerSummary || 'No headers found');
+      item.appendChild(heading);
+      item.appendChild(detail);
+      results.appendChild(item);
+    });
+  }
+
+  // google.script.run calls the server asynchronously and reports the result here.
+  function checkSpreadsheetDiagnostic() {
+    showConnectionStatus('is-loading', 'Checking spreadsheet');
+    document.getElementById('status-title').textContent = 'Checking spreadsheet setup';
+    document.getElementById('diagnostic-message').textContent = 'Connecting to the configured spreadsheet and checking its tabs.';
+    document.getElementById('schema-results').textContent = '';
+    document.getElementById('schema-results').setAttribute('aria-busy', 'true');
+
+    google.script.run
+      .withSuccessHandler(function (diagnostic) {
+        renderSpreadsheetDiagnostic(diagnostic);
+      })
+      .withFailureHandler(function () {
+        renderSpreadsheetDiagnostic({
+          status: 'error',
+          schemaValid: false,
+          message: 'The diagnostic could not be completed. Check Apps Script execution logs.'
+        });
+      })
+      .getSpreadsheetDiagnostic();
+  }
+
+  var selectedStudents = [];
+  var achievementAccess = { available: false, canSubmit: false, canReview: false };
+  var socialMediaAccess = null;
+  var socialMediaTaskOptions = { achievements: [], assignees: [] };
+  var socialMediaTasks = [];
+  var socialMediaIsDemo = false;
+  var activityLogCursor = null;
+  var achievementPagesInitialized = false;
+  var socialMediaStatuses = [
+    'Incoming', 'In Design', 'Awaiting Approval', 'Ready to Publish',
+    'Awaiting Publication Proof', 'Completed', 'Needs Correction',
+    'On Hold', 'Cancelled'
+  ];
+  var socialMediaPriorities = ['Low', 'Normal', 'High', 'Urgent'];
+
+  function socialMediaMutationAllowed(access, isDemo, actionName) {
+    if (isDemo || !access || !access.available) {
+      return false;
+    }
+    return actionName !== 'reviewProof' && Boolean(access.canManage);
+  }
+
+  function renderDashboardSummary(summary) {
+    var values = {
+      'summary-students': summary.students,
+      'summary-achievements': summary.achievements,
+      'summary-reviews': summary.pendingReviews,
+      'summary-social-tasks': summary.socialMediaTasks,
+      'summary-stories': summary.storyAssets
+    };
+    Object.keys(values).forEach(function (id) {
+      var element = document.getElementById(id);
+      var value = values[id];
+      element.textContent = Number.isInteger(value) && value >= 0 ? String(value) : '--';
+    });
+    document.getElementById('summary-message').textContent = 'Live spreadsheet counts';
+  }
+
+  function loadDashboardSummary() {
+    var message = document.getElementById('summary-message');
+    message.textContent = 'Loading summary';
+    google.script.run
+      .withSuccessHandler(renderDashboardSummary)
+      .withFailureHandler(function () {
+        message.textContent = 'Summary unavailable; check spreadsheet schema and Apps Script logs.';
+      })
+      .getDashboardSummary();
+  }
+
+  function showPage(pageName) {
+    ['overview', 'students', 'submit', 'reviews', 'social-media', 'activity-log'].forEach(function (name) {
+      document.getElementById(name + '-page').hidden = name !== pageName;
+    });
+    document.querySelectorAll('[data-page]').forEach(function (link) {
+      var active = link.getAttribute('data-page') === pageName;
+      link.classList.toggle('is-active', active);
+      if (active) {
+        link.setAttribute('aria-current', 'page');
+      } else {
+        link.removeAttribute('aria-current');
+      }
+    });
+    var breadcrumb = document.querySelector('.breadcrumb');
+    breadcrumb.textContent = '';
+    breadcrumb.appendChild(document.createTextNode('Workspace '));
+    var separator = document.createElement('span');
+    separator.textContent = '/';
+    breadcrumb.appendChild(separator);
+    breadcrumb.appendChild(document.createTextNode(' ' + (
+      pageName === 'submit' ? 'Submit achievement' :
+      pageName === 'students' ? 'Students' :
+      pageName === 'reviews' ? 'Reviews' :
+      pageName === 'social-media' ? 'Social media' : 'Overview'
+    )));
+  }
+
+  function initializeNavigation() {
+    document.querySelectorAll('[data-page]').forEach(function (link) {
+      link.addEventListener('click', function (event) {
+        event.preventDefault();
+        var pageName = link.getAttribute('data-page');
+        showPage(pageName);
+        window.location.hash = pageName === 'submit' ? 'achievements' : pageName;
+        if (pageName === 'reviews') {
+          loadReviewQueue();
+        } else if (pageName === 'social-media') {
+          loadSocialMediaPage();
+        } else if (pageName === 'activity-log') {
+          loadActivityLog(true);
+        } else if (pageName === 'students') {
+          document.getElementById('student-directory-query').focus();
+        }
+      });
+    });
+  }
+
+  function applyAchievementAccess(access) {
+    achievementAccess = access || { available: false, canSubmit: false, canReview: false };
+    var submitAllowed = achievementAccess.available && achievementAccess.canSubmit;
+    var reviewAllowed = achievementAccess.available && achievementAccess.canReview;
+    var activityAllowed = achievementAccess.available && achievementAccess.isAdministrator;
+    var activityLink = document.querySelector
+      ? document.querySelector('[data-page="activity-log"]')
+      : null;
+    if (activityLink) {
+      activityLink.hidden = !activityAllowed;
+    }
+    if (!activityAllowed && window.location.hash === '#activity-log') {
+      window.location.hash = 'overview';
+      showPage('overview');
+      document.getElementById('activity-log-access-message').textContent =
+        'Activity Log access is limited to Administrators.';
+      document.getElementById('activity-log-access-message').hidden = false;
+    }
+    if (activityAllowed && window.location.hash === '#activity-log') {
+      loadActivityLog(true);
+    }
+    document.querySelectorAll(
+      '#achievement-form input, #achievement-form select, #achievement-form textarea, #achievement-form button'
+    ).forEach(function (control) {
+      control.disabled = !submitAllowed;
+    });
+    document.getElementById('refresh-reviews').disabled = !reviewAllowed;
+    document.getElementById('student-directory-search-button').disabled =
+      !achievementAccess.available || (!achievementAccess.canSubmit && !achievementAccess.canReview);
+
+    var notice = document.getElementById('access-notice');
+    if (!achievementAccess.available) {
+      var identityMessage = 'Achievement submissions and reviews are disabled because a trusted Google identity could not be verified. ' +
+        (achievementAccess.message || 'Ask the administrator to configure authenticated access.');
+      notice.textContent = identityMessage;
+      notice.hidden = false;
+      document.getElementById('submit-access-message').textContent = identityMessage;
+      document.getElementById('submit-access-message').hidden = false;
+      document.getElementById('reviews-access-message').textContent = identityMessage;
+      document.getElementById('reviews-access-message').hidden = false;
+      var studentMessage = document.getElementById('students-page-message');
+      studentMessage.textContent = 'Student search is unavailable until Google identity verification succeeds.';
+      studentMessage.classList.add('is-error');
+      document.getElementById('student-directory-results').setAttribute('aria-busy', 'false');
+      return;
+    }
+    if (!achievementAccess.canSubmit && !achievementAccess.canReview && !activityAllowed) {
+      var roleMessage = 'Your active SAMS account does not have an authorized submission or verification role.';
+      notice.textContent = roleMessage;
+      notice.hidden = false;
+      document.getElementById('submit-access-message').textContent = roleMessage;
+      document.getElementById('submit-access-message').hidden = false;
+      document.getElementById('reviews-access-message').textContent = roleMessage;
+      document.getElementById('reviews-access-message').hidden = false;
+      var studentRoleMessage = document.getElementById('students-page-message');
+      studentRoleMessage.textContent = 'Your account is not authorized to search the student directory.';
+      studentRoleMessage.classList.add('is-error');
+      return;
+    }
+    notice.hidden = true;
+    var submitNotice = document.getElementById('submit-access-message');
+    submitNotice.hidden = submitAllowed;
+    submitNotice.textContent = submitAllowed ? '' : 'Your active SAMS account does not have the Mentor role required to submit achievements.';
+    var reviewsNotice = document.getElementById('reviews-access-message');
+    reviewsNotice.hidden = reviewAllowed;
+    reviewsNotice.textContent = reviewAllowed ? '' : 'Your active SAMS account does not have an authorized verification role.';
+    if (reviewAllowed && window.location.hash === '#reviews') {
+      loadReviewQueue();
+    }
+  }
+
+  function loadAchievementAccess() {
+    google.script.run
+      .withSuccessHandler(applyAchievementAccess)
+      .withFailureHandler(function () {
+        applyAchievementAccess({
+          available: false,
+          message: 'The server could not verify your identity. Check Apps Script execution logs.'
+        });
+      })
+      .getAchievementAccess();
+  }
+
+  function showStudentSearchError(error) {
+    var message = document.getElementById('students-page-message');
+    message.textContent = error && error.message
+      ? error.message
+      : 'Student search failed. Try again or check Apps Script execution logs.';
+    message.classList.add('is-error');
+    document.getElementById('student-directory-results').setAttribute('aria-busy', 'false');
+    document.getElementById('student-directory-search-button').disabled = false;
+    console.warn('[SAMS] Student directory request failed; no student data was logged.');
+  }
+
+  function renderStudentHistory(container, studentId, button) {
+    button.disabled = true;
+    var history = document.createElement('div');
+    history.className = 'student-history';
+    history.setAttribute('role', 'status');
+    history.textContent = 'Loading achievement history…';
+    container.appendChild(history);
+    google.script.run
+      .withSuccessHandler(function (items) {
+        history.textContent = '';
+        history.removeAttribute('role');
+        if (!items || !items.length) {
+          history.textContent = 'No achievement history found for this student.';
+        } else {
+          var heading = document.createElement('h3');
+          heading.textContent = 'Achievement history';
+          history.appendChild(heading);
+          items.forEach(function (achievement) {
+            var item = document.createElement('div');
+            item.className = 'student-history-item';
+            var details = document.createElement('p');
+            details.textContent = [
+              achievement.title,
+              achievement.category,
+              achievement.result,
+              achievement.date,
+              achievement.academicYear,
+              achievement.status
+            ].filter(Boolean).join(' · ');
+            item.appendChild(details);
+            if (achievement.canDelete && achievement.achievementId) {
+              var deleteButton = document.createElement('button');
+              deleteButton.type = 'button';
+              deleteButton.className = 'button button-secondary';
+              deleteButton.textContent = 'Delete achievement';
+              deleteButton.addEventListener('click', function () {
+                if (!window.confirm(
+                  'Delete this achievement and eligible linked sheet records? Drive evidence files and Social Media tasks with publication history will be kept.'
+                )) {
+                  return;
+                }
+                deleteButton.disabled = true;
+                google.script.run
+                  .withSuccessHandler(function () {
+                    item.textContent = 'Achievement deleted. Drive evidence files and Social Media tasks with publication history were kept.';
+                  })
+                  .withFailureHandler(function (error) {
+                    deleteButton.disabled = false;
+                    var failure = document.createElement('p');
+                    failure.className = 'is-error';
+                    failure.textContent = error && error.message
+                      ? error.message
+                      : 'Achievement deletion failed.';
+                    item.appendChild(failure);
+                  })
+                  .deleteAchievement(achievement.achievementId);
+              });
+              item.appendChild(deleteButton);
+            }
+            history.appendChild(item);
+          });
+        }
+        button.disabled = false;
+      })
+      .withFailureHandler(function (error) {
+        history.textContent = error && error.message
+          ? error.message
+          : 'Achievement history could not be loaded. Try again.';
+        history.classList.add('is-error');
+        button.disabled = false;
+        console.warn('[SAMS] Student history request failed; no student data was logged.');
+      })
+      .getStudentAchievementHistory(studentId);
+  }
+
+  function renderStudentDirectoryResults(students) {
+    var results = document.getElementById('student-directory-results');
+    results.textContent = '';
+    if (!students || !students.length) {
+      var empty = document.createElement('p');
+      empty.className = 'empty-queue';
+      empty.textContent = 'No active students matched that search.';
+      results.appendChild(empty);
+      return;
+    }
+    students.forEach(function (student) {
+      var card = document.createElement('article');
+      card.className = 'student-directory-card';
+      var heading = document.createElement('h2');
+      heading.textContent = student.name;
+      var details = document.createElement('p');
+      details.className = 'review-details';
+      details.textContent = [
+        student.rollNumber,
+        student.studentId,
+        student.grade ? 'Grade ' + student.grade : '',
+        student.section ? 'Section ' + student.section : ''
+      ].filter(Boolean).join(' · ');
+      var historyButton = document.createElement('button');
+      historyButton.type = 'button';
+      historyButton.className = 'button button-secondary';
+      historyButton.textContent = 'View achievement history';
+      historyButton.addEventListener('click', function () {
+        renderStudentHistory(card, student.studentId, historyButton);
+      });
+      card.appendChild(heading);
+      card.appendChild(details);
+      card.appendChild(historyButton);
+      results.appendChild(card);
+    });
+  }
+
+  function searchStudentsFromPage(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    var query = document.getElementById('student-directory-query').value.trim();
+    var message = document.getElementById('students-page-message');
+    var results = document.getElementById('student-directory-results');
+    var button = document.getElementById('student-directory-search-button');
+    message.classList.remove('is-error');
+    results.textContent = '';
+    results.setAttribute('aria-busy', 'true');
+
+    if (!query) {
+      results.setAttribute('aria-busy', 'false');
+      message.textContent = 'Enter a name, StudentID or roll number to search.';
+      message.classList.add('is-error');
+      return;
+    }
+    message.textContent = 'Searching active student records…';
+    button.disabled = true;
+    google.script.run
+      .withSuccessHandler(function (students) {
+        renderStudentDirectoryResults(students || []);
+        message.textContent = students && students.length
+          ? 'Found ' + students.length + ' active student' + (students.length === 1 ? '.' : 's.')
+          : 'Search complete.';
+        results.setAttribute('aria-busy', 'false');
+        button.disabled = false;
+      })
+      .withFailureHandler(showStudentSearchError)
+      .searchStudents(query);
+  }
+
+  function initializeStudentsPage() {
+    document.getElementById('student-directory-search-form')
+      .addEventListener('submit', searchStudentsFromPage);
+  }
+
+  function pageForHash(hash) {
+    if (hash === '#students') {
+      return 'students';
+    }
+    if (hash === '#reviews') {
+      return 'reviews';
+    }
+    if (hash === '#social-media') {
+      return 'social-media';
+    }
+    if (hash === '#activity-log') {
+      return 'activity-log';
+    }
+    if (hash === '#submit' || hash === '#achievements') {
+      return 'submit';
+    }
+    return 'overview';
+  }
+
+  function setSelectOptions(select, items, placeholder) {
+    select.textContent = '';
+    var emptyOption = document.createElement('option');
+    emptyOption.value = '';
+    emptyOption.textContent = placeholder;
+    select.appendChild(emptyOption);
+    items.forEach(function (item) {
+      var option = document.createElement('option');
+      option.value = item.value;
+      option.textContent = item.label;
+      select.appendChild(option);
+    });
+  }
+
+  function getSocialMediaTaskCounts(tasks) {
+    var counts = { 'All tasks': tasks.length };
+    socialMediaStatuses.forEach(function (status) { counts[status] = 0; });
+    tasks.forEach(function (task) {
+      if (task.status) {
+        if (!Object.prototype.hasOwnProperty.call(counts, task.status)) {
+          counts[task.status] = 0;
+        }
+        counts[task.status]++;
+      }
+    });
+    return counts;
+  }
+
+  function renderSocialMediaCounts(tasks) {
+    var counts = getSocialMediaTaskCounts(tasks);
+    var container = document.getElementById('social-task-counts');
+    container.textContent = '';
+    Object.keys(counts).forEach(function (label) {
+      var card = document.createElement('article');
+      card.className = 'task-count-card';
+      var title = document.createElement('span');
+      title.textContent = label;
+      var value = document.createElement('strong');
+      value.textContent = String(counts[label]);
+      card.appendChild(title);
+      card.appendChild(value);
+      container.appendChild(card);
+    });
+  }
+
+  function taskMatchesFilters(task) {
+    var query = document.getElementById('social-task-search').value.trim().toLowerCase();
+    var status = document.getElementById('social-task-filter-status').value;
+    var platform = document.getElementById('social-task-filter-platform').value;
+    var assignee = document.getElementById('social-task-filter-assignee').value;
+    var priority = document.getElementById('social-task-filter-priority').value;
+    var searchable = [
+      task.taskId, task.achievementTitle, task.achievementCategory,
+      task.competitionEvent, task.platform, task.assigneeName, task.caption
+    ].join(' ').toLowerCase();
+    return (!query || searchable.indexOf(query) !== -1) &&
+      (!status || task.status === status) &&
+      (!platform || task.platform === platform) &&
+      (!assignee || (assignee === '__unassigned__'
+        ? !task.assignedTo
+        : task.assignedTo === assignee)) &&
+      (!priority || task.priority === priority);
+  }
+
+  function socialMediaActionButton(label, action, payload, disabled) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'button button-secondary';
+    button.textContent = label;
+    button.disabled = Boolean(disabled) ||
+      !socialMediaMutationAllowed(socialMediaAccess, socialMediaIsDemo, action.name);
+    button.addEventListener('click', function () {
+      runSocialMediaMutation(button, action.taskId, action.name,
+        typeof payload === 'function' ? payload() : (payload || {}));
+    });
+    return button;
+  }
+
+  function addTaskInput(parent, labelText, type, value, maxLength) {
+    var label = document.createElement('label');
+    label.className = 'form-field task-input-field';
+    label.textContent = labelText;
+    var input = document.createElement(type === 'textarea' ? 'textarea' : 'input');
+    if (type !== 'textarea') {
+      input.type = type;
+    } else {
+      input.rows = 2;
+    }
+    if (maxLength) {
+      input.maxLength = maxLength;
+    }
+    if (value) {
+      input.value = value;
+    }
+    label.appendChild(input);
+    parent.appendChild(label);
+    return input;
+  }
+
+  function addTaskSelect(parent, labelText, options, selectedValue, emptyLabel) {
+    var label = document.createElement('label');
+    label.className = 'form-field task-input-field';
+    label.textContent = labelText;
+    var select = document.createElement('select');
+    if (emptyLabel) {
+      var empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = emptyLabel;
+      select.appendChild(empty);
+    }
+    options.forEach(function (item) {
+      var option = document.createElement('option');
+      option.value = item.value;
+      option.textContent = item.label;
+      select.appendChild(option);
+    });
+    if (selectedValue) {
+      select.value = selectedValue;
+    }
+    label.appendChild(select);
+    parent.appendChild(label);
+    return select;
+  }
+
+  function appendTaskManagementControls(card, task) {
+    if (!socialMediaAccess || socialMediaIsDemo || !socialMediaAccess.canManage) {
+      return;
+    }
+    var status = task.status;
+    var controls = document.createElement('div');
+    controls.className = 'task-controls';
+
+    if (socialMediaAccess.canManage &&
+        ['Incoming', 'In Design', 'Needs Correction', 'On Hold'].indexOf(status) !== -1) {
+      var assignment = document.createElement('div');
+      assignment.className = 'task-control-row';
+      var platform = addTaskInput(assignment, 'Platform', 'text', task.platform, 40);
+      var assignee = addTaskSelect(assignment, 'Assignee',
+        socialMediaTaskOptions.assignees.map(function (person) {
+          return { value: person.userId, label: person.name };
+        }), task.assignedTo, 'Unassigned');
+      var priority = addTaskSelect(assignment, 'Priority',
+        socialMediaPriorities.map(function (value) {
+          return { value: value, label: value };
+        }), task.priority, 'No priority selected');
+      var due = addTaskInput(assignment, 'Due date', 'date', task.dueDate, 0);
+      controls.appendChild(assignment);
+      controls.appendChild(socialMediaActionButton('Save assignment and schedule', {
+        taskId: task.taskId, name: 'assign'
+      }, function () {
+        return {
+          platform: platform.value,
+          assignedTo: assignee.value,
+          priority: priority.value,
+          dueDate: due.value
+        };
+      }, !socialMediaTaskOptions.assignees.length));
+
+      var content = document.createElement('div');
+      content.className = 'task-control-row';
+      var caption = addTaskInput(content, 'Caption', 'textarea', task.caption, 2200);
+      var design = addTaskInput(content, 'Design reference (restricted file reference)', 'text', '', 200);
+      controls.appendChild(content);
+      controls.appendChild(socialMediaActionButton('Save caption and design reference', {
+        taskId: task.taskId, name: 'updateContent'
+      }, function () {
+        return { caption: caption.value, designReference: design.value };
+      }));
+    }
+
+    if (socialMediaAccess.canManage && (status === 'Incoming' || status === 'Needs Correction')) {
+      controls.appendChild(socialMediaActionButton('Start design', {
+        taskId: task.taskId, name: 'startDesign'
+      }));
+    }
+    if (socialMediaAccess.canManage && status === 'In Design') {
+      controls.appendChild(socialMediaActionButton('Submit design for approval', {
+        taskId: task.taskId, name: 'submitForApproval'
+      }));
+    }
+    if (socialMediaAccess.canManage && status === 'Awaiting Approval') {
+      controls.appendChild(socialMediaActionButton('Approve design', {
+        taskId: task.taskId, name: 'approveDesign'
+      }, {}, !socialMediaAccess.canReviewProof));
+      appendCorrectionControl(controls, task);
+    }
+    if (socialMediaAccess.canManage && (status === 'In Design' || status === 'Ready to Publish')) {
+      appendCorrectionControl(controls, task);
+    }
+    if (status === 'Ready to Publish') {
+      var publish = document.createElement('div');
+      publish.className = 'task-control-row';
+      var postUrl = addTaskInput(publish, 'Published post URL (HTTPS)', 'url', task.postUrl, 500);
+      var publishedAt = addTaskInput(publish, 'Published at', 'datetime-local', '', 0);
+      controls.appendChild(publish);
+      controls.appendChild(socialMediaActionButton('Record manual publication', {
+        taskId: task.taskId, name: 'recordPublication'
+      }, function () {
+        return { postUrl: postUrl.value, publishedAt: publishedAt.value };
+      }));
+    }
+    if (status === 'Awaiting Publication Proof') {
+      var proofHint = document.createElement('p');
+      proofHint.className = 'field-hint';
+      proofHint.textContent = 'Publication-proof review and task completion are disabled. A task cannot be completed through this app.';
+      controls.appendChild(proofHint);
+    }
+    if (socialMediaAccess.canManage && status === 'On Hold') {
+      controls.appendChild(socialMediaActionButton('Resume as Incoming', {
+        taskId: task.taskId, name: 'resume'
+      }, { resumeStatus: 'Incoming' }));
+    }
+    if (socialMediaAccess.canManage && ['Completed', 'Cancelled'].indexOf(status) === -1) {
+      controls.appendChild(socialMediaActionButton('Put on hold', {
+        taskId: task.taskId, name: 'hold'
+      }, {}, status === 'On Hold' || status === 'Awaiting Publication Proof'));
+      if (['Awaiting Publication Proof'].indexOf(status) === -1) {
+        controls.appendChild(socialMediaActionButton('Cancel task', {
+          taskId: task.taskId, name: 'cancel'
+        }));
+      }
+    }
+    card.appendChild(controls);
+  }
+
+  function appendCorrectionControl(parent, task) {
+    var notes = addTaskInput(parent, 'Correction notes', 'textarea', '', 500);
+    parent.appendChild(socialMediaActionButton('Return for correction', {
+      taskId: task.taskId, name: 'requestCorrection'
+    }, function () {
+      return { notes: notes.value };
+    }));
+  }
+
+  function appendTaskCard(task) {
+    var card = document.createElement('article');
+    card.className = 'review-card social-task-card';
+    var heading = document.createElement('div');
+    heading.className = 'review-card-heading';
+    var title = document.createElement('h2');
+    title.textContent = task.achievementTitle || 'Sample social media task';
+    var status = document.createElement('span');
+    status.className = 'status-pill';
+    status.textContent = task.status;
+    heading.appendChild(title);
+    heading.appendChild(status);
+    card.appendChild(heading);
+
+    var details = document.createElement('p');
+    details.className = 'review-details';
+    details.textContent = [
+      'Task ' + task.taskId,
+      task.achievementId ? 'Achievement ' + task.achievementId : '',
+      task.achievementCategory,
+      task.competitionEvent,
+      task.result,
+      task.platform || 'Platform not selected',
+      task.priority,
+      task.dueDate ? 'Due ' + task.dueDate : '',
+      task.assigneeName || (task.assignedTo ? 'Assigned' : 'Unassigned')
+    ].filter(Boolean).join(' · ');
+    card.appendChild(details);
+    if (task.achievementDate) {
+      var achievementDate = document.createElement('p');
+      achievementDate.className = 'review-details';
+      achievementDate.textContent = 'Achievement date: ' + task.achievementDate;
+      card.appendChild(achievementDate);
+    }
+    if (task.achievementDescription) {
+      var achievementDescription = document.createElement('p');
+      achievementDescription.className = 'review-details';
+      achievementDescription.textContent = task.achievementDescription;
+      card.appendChild(achievementDescription);
+    }
+    if (task.participants && task.participants.length) {
+      var participantDetails = document.createElement('p');
+      participantDetails.className = 'review-details';
+      participantDetails.textContent = 'Participants: ' + task.participants.map(function (participant) {
+        return [participant.name, participant.rollNumber, participant.roleContribution]
+          .filter(Boolean).join(' · ');
+      }).join('; ');
+      card.appendChild(participantDetails);
+    }
+    if (task.designReferenceAvailable) {
+      var designReference = document.createElement('p');
+      designReference.className = 'review-details';
+      designReference.textContent = 'Design reference: recorded';
+      card.appendChild(designReference);
+    }
+    if (task.publishedAt) {
+      var publishedAt = document.createElement('p');
+      publishedAt.className = 'review-details';
+      publishedAt.textContent = 'Published at ' + task.publishedAt;
+      card.appendChild(publishedAt);
+    }
+    if (task.completedAt) {
+      var completedAt = document.createElement('p');
+      completedAt.className = 'review-details';
+      completedAt.textContent = 'Completed at ' + task.completedAt;
+      card.appendChild(completedAt);
+    }
+    if (task.reviewedByName) {
+      var reviewer = document.createElement('p');
+      reviewer.className = 'review-details';
+      reviewer.textContent = 'Reviewed by ' + task.reviewedByName;
+      card.appendChild(reviewer);
+    }
+    if (task.caption) {
+      var caption = document.createElement('p');
+      caption.className = 'review-description';
+      caption.textContent = task.caption;
+      card.appendChild(caption);
+    }
+    if (task.postUrl) {
+      var post = document.createElement('a');
+      post.className = 'review-details';
+      if (/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:[/?#][^\s]*)?$/i.test(task.postUrl)) {
+        post.href = task.postUrl;
+        post.target = '_blank';
+        post.rel = 'noopener noreferrer';
+        post.textContent = task.postUrl;
+        card.appendChild(post);
+      }
+    }
+    if (task.reviewNotes) {
+      var notes = document.createElement('p');
+      notes.className = 'review-details';
+      notes.textContent = 'Latest review: ' + task.reviewNotes;
+      card.appendChild(notes);
+    }
+    appendTaskManagementControls(card, task);
+    return card;
+  }
+
+  function renderSocialMediaTasks() {
+    var filtered = socialMediaTasks.filter(taskMatchesFilters);
+    var list = document.getElementById('social-task-list');
+    list.textContent = '';
+    if (!filtered.length) {
+      var empty = document.createElement('p');
+      empty.className = 'empty-queue';
+      empty.textContent = socialMediaTasks.length
+        ? 'No tasks match the selected filters.'
+        : 'No social media tasks yet. Create a task from an approved achievement when needed.';
+      list.appendChild(empty);
+      return;
+    }
+    filtered.forEach(function (task) {
+      list.appendChild(appendTaskCard(task));
+    });
+  }
+
+  function updateSocialMediaFilters() {
+    var platforms = {};
+    var assignees = { '__unassigned__': 'Unassigned' };
+    socialMediaTasks.forEach(function (task) {
+      if (task.platform) {
+        platforms[task.platform] = true;
+      }
+      if (task.assignedTo) {
+        assignees[task.assignedTo] = task.assigneeName || 'Assigned user';
+      }
+    });
+    var allStatuses = socialMediaStatuses.slice();
+    var allPriorities = socialMediaPriorities.slice();
+    socialMediaTasks.forEach(function (task) {
+      if (task.status && allStatuses.indexOf(task.status) === -1) {
+        allStatuses.push(task.status);
+      }
+      if (task.priority && allPriorities.indexOf(task.priority) === -1) {
+        allPriorities.push(task.priority);
+      }
+    });
+    setSelectOptions(document.getElementById('social-task-filter-status'),
+      allStatuses.map(function (status) { return { value: status, label: status }; }),
+      'All statuses');
+    setSelectOptions(document.getElementById('social-task-filter-platform'),
+      Object.keys(platforms).sort().map(function (platform) {
+        return { value: platform, label: platform };
+      }), 'All platforms');
+    setSelectOptions(document.getElementById('social-task-filter-assignee'),
+      Object.keys(assignees).sort().map(function (id) {
+        return { value: id, label: assignees[id] };
+      }), 'All assignees');
+    setSelectOptions(document.getElementById('social-task-filter-priority'),
+      allPriorities.sort().map(function (priority) {
+        return { value: priority, label: priority };
+      }), 'All priorities');
+    renderSocialMediaCounts(socialMediaTasks);
+    renderSocialMediaTasks();
+  }
+
+  function sampleSocialMediaTasks() {
+    return [{
+      taskId: 'SAMPLE-1',
+      achievementId: '',
+      achievementTitle: 'Sample: Regional robotics challenge',
+      achievementCategory: 'STEM',
+      competitionEvent: 'Regional Expo',
+      result: 'First place',
+      platform: 'Instagram',
+      priority: 'Normal',
+      status: 'Incoming',
+      dueDate: '',
+      assignedTo: '',
+      assigneeName: '',
+      caption: 'Sample caption — demonstration only.',
+      postUrl: '',
+      reviewNotes: ''
+    }];
+  }
+
+  function renderSocialMediaAccess(access) {
+    socialMediaAccess = access || { available: false, canManage: false, canReviewProof: false };
+    var message = document.getElementById('social-media-access-message');
+    var createPanel = document.getElementById('social-task-create-panel');
+    var createButton = document.getElementById('create-social-task');
+    var refreshButton = document.getElementById('refresh-social-tasks');
+    refreshButton.disabled = false;
+    createButton.disabled = !socialMediaAccess.available || !socialMediaAccess.canManage;
+    createPanel.hidden = !socialMediaAccess.available || !socialMediaAccess.canManage;
+
+    if (!socialMediaAccess.available) {
+      message.textContent = 'Identity or active SAMS account could not be verified. This is sample data for demonstration only; all task actions are disabled. ' +
+        (socialMediaAccess.message || '');
+      message.hidden = false;
+      socialMediaTasks = sampleSocialMediaTasks();
+      socialMediaIsDemo = true;
+      updateSocialMediaFilters();
+      return;
+    }
+    socialMediaIsDemo = false;
+    if (!socialMediaAccess.canManage) {
+      message.textContent = socialMediaAccess.canReviewProof
+        ? 'Read-only task list. Publication-proof review and task completion are disabled.'
+        : 'Read-only task list. Your account is not assigned a SocialMedia, Communications or Administrator role.';
+      message.hidden = false;
+    } else {
+      message.hidden = true;
+    }
+
+    if (socialMediaAccess.canManage) {
+      google.script.run
+        .withSuccessHandler(function (options) {
+          socialMediaTaskOptions = options || { achievements: [], assignees: [] };
+          var achievements = socialMediaTaskOptions.achievements.map(function (achievement) {
+            return {
+              value: achievement.achievementId,
+              label: achievement.title + ' · ' + achievement.category + ' · ' +
+                achievement.competitionEvent + ' · ' + achievement.result
+            };
+          });
+          setSelectOptions(
+            document.getElementById('social-task-achievement'),
+            achievements,
+            achievements.length ? 'Select a Verified achievement' : 'No eligible achievements'
+          );
+          createButton.disabled = !achievements.length;
+        })
+        .withFailureHandler(function (error) {
+          message.textContent = error && error.message ? error.message : 'Task creation options could not be loaded.';
+          message.hidden = false;
+          createButton.disabled = true;
+        })
+        .getSocialMediaTaskOptions();
+    }
+    loadSocialMediaTaskBoard();
+  }
+
+  function loadSocialMediaTaskBoard() {
+    var message = document.getElementById('social-task-list-message');
+    var list = document.getElementById('social-task-list');
+    message.textContent = 'Loading social media tasks…';
+    list.setAttribute('aria-busy', 'true');
+    google.script.run
+      .withSuccessHandler(function (tasks) {
+        socialMediaTasks = tasks || [];
+        message.textContent = '';
+        list.setAttribute('aria-busy', 'false');
+        updateSocialMediaFilters();
+      })
+      .withFailureHandler(function (error) {
+        message.textContent = error && error.message ? error.message : 'Social media tasks could not be loaded.';
+        socialMediaTasks = [];
+        updateSocialMediaFilters();
+        list.textContent = '';
+        var failure = document.createElement('p');
+        failure.className = 'empty-queue is-error';
+        failure.textContent = 'The task list is unavailable. Check the message above and try refreshing.';
+        list.appendChild(failure);
+        list.setAttribute('aria-busy', 'false');
+      })
+      .getSocialMediaTaskBoard();
+  }
+
+  function loadSocialMediaPage() {
+    if (socialMediaAccess) {
+      if (socialMediaAccess.available) {
+        loadSocialMediaTaskBoard();
+      }
+      return;
+    }
+    document.getElementById('social-media-access-message').textContent = 'Checking signed-in account and task permissions…';
+    document.getElementById('social-media-access-message').hidden = false;
+    google.script.run
+      .withSuccessHandler(renderSocialMediaAccess)
+      .withFailureHandler(function () {
+        renderSocialMediaAccess({
+          available: false,
+          canManage: false,
+          canReviewProof: false,
+          message: 'The server could not verify the signed-in identity.'
+        });
+      })
+      .getSocialMediaAccess();
+  }
+
+  function runSocialMediaMutation(button, taskId, action, payload) {
+    if (socialMediaIsDemo || !socialMediaAccess || !socialMediaAccess.available ||
+        !socialMediaMutationAllowed(socialMediaAccess, socialMediaIsDemo, action)) {
+      return;
+    }
+    button.disabled = true;
+    google.script.run
+      .withSuccessHandler(function () {
+        document.getElementById('social-task-list-message').textContent = 'Task updated and audit logged.';
+        loadSocialMediaTaskBoard();
+      })
+      .withFailureHandler(function (error) {
+        button.disabled = false;
+        document.getElementById('social-task-list-message').textContent =
+          error && error.message ? error.message : 'Task update failed.';
+      })
+      .updateSocialMediaTask(taskId, action, payload);
+  }
+
+  function createSocialMediaTask(event) {
+    event.preventDefault();
+    if (!socialMediaAccess || !socialMediaAccess.available || !socialMediaAccess.canManage) {
+      return;
+    }
+    var button = document.getElementById('create-social-task');
+    var message = document.getElementById('social-task-create-message');
+    button.disabled = true;
+    message.textContent = 'Creating task…';
+    google.script.run
+      .withSuccessHandler(function () {
+        message.textContent = 'Task created.';
+        document.getElementById('social-task-platform').value = '';
+        document.getElementById('social-task-due-date').value = '';
+        loadSocialMediaTaskBoard();
+        loadSocialMediaPageOptions_();
+      })
+      .withFailureHandler(function (error) {
+        message.textContent = error && error.message ? error.message : 'Task could not be created.';
+        button.disabled = false;
+      })
+      .createSocialMediaTask({
+        achievementId: document.getElementById('social-task-achievement').value,
+        platform: document.getElementById('social-task-platform').value,
+        priority: document.getElementById('social-task-priority').value,
+        dueDate: document.getElementById('social-task-due-date').value
+      });
+  }
+
+  function loadSocialMediaPageOptions_() {
+    google.script.run
+      .withSuccessHandler(function (options) {
+        socialMediaTaskOptions = options || { achievements: [], assignees: [] };
+        var achievements = socialMediaTaskOptions.achievements.map(function (achievement) {
+          return {
+            value: achievement.achievementId,
+            label: achievement.title + ' · ' + achievement.category + ' · ' +
+              achievement.competitionEvent + ' · ' + achievement.result
+          };
+        });
+        setSelectOptions(
+          document.getElementById('social-task-achievement'),
+          achievements,
+          achievements.length ? 'Select a Verified achievement' : 'No eligible achievements'
+        );
+        document.getElementById('create-social-task').disabled = !achievements.length;
+      })
+      .withFailureHandler(function (error) {
+        document.getElementById('social-task-create-message').textContent =
+          error && error.message ? error.message : 'Task creation options could not be loaded.';
+      })
+      .getSocialMediaTaskOptions();
+  }
+
+  function setFormMessage(message, isError) {
+    var output = document.getElementById('submission-message');
+    output.textContent = message;
+    output.classList.toggle('is-error', Boolean(isError));
+  }
+
+  function renderStudentResults(students) {
+    var results = document.getElementById('student-results');
+    results.textContent = '';
+    if (!students.length) {
+      var empty = document.createElement('li');
+      empty.textContent = 'No active students matched that search.';
+      results.appendChild(empty);
+      return;
+    }
+    students.forEach(function (student) {
+      var item = document.createElement('li');
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'student-result';
+      button.textContent = student.name + ' · ' + student.rollNumber + ' · Grade ' +
+        student.grade + ' ' + student.section;
+      button.addEventListener('click', function () {
+        if (selectedStudents.some(function (selected) {
+          return selected.studentId === student.studentId;
+        })) {
+          return;
+        }
+        if (document.getElementById('achievement-type').value === 'Individual' &&
+            selectedStudents.length) {
+          setFormMessage('An individual achievement can include only one student.', true);
+          return;
+        }
+        selectedStudents.push(student);
+        renderSelectedStudents();
+        results.textContent = '';
+        setFormMessage('', false);
+      });
+      item.appendChild(button);
+      results.appendChild(item);
+    });
+  }
+
+  function renderSelectedStudents() {
+    var list = document.getElementById('selected-students');
+    list.textContent = '';
+    selectedStudents.forEach(function (student) {
+      var item = document.createElement('li');
+      var name = document.createElement('span');
+      var remove = document.createElement('button');
+      name.textContent = student.name + ' · ' + student.rollNumber;
+      remove.type = 'button';
+      remove.className = 'remove-student';
+      remove.textContent = 'Remove';
+      remove.setAttribute('aria-label', 'Remove ' + student.name);
+      remove.addEventListener('click', function () {
+        selectedStudents = selectedStudents.filter(function (selected) {
+          return selected.studentId !== student.studentId;
+        });
+        renderSelectedStudents();
+      });
+      item.appendChild(name);
+      item.appendChild(remove);
+      list.appendChild(item);
+    });
+  }
+
+  function searchForStudents() {
+    if (!achievementAccess.available || !achievementAccess.canSubmit) {
+      setFormMessage('Your account is not authorized to search students for submissions.', true);
+      return;
+    }
+    var query = document.getElementById('student-search').value.trim();
+    if (!query) {
+      setFormMessage('Enter a name, StudentID or roll number to search.', true);
+      return;
+    }
+    var button = document.getElementById('search-students');
+    button.disabled = true;
+    google.script.run
+      .withSuccessHandler(function (students) {
+        button.disabled = false;
+        renderStudentResults(students || []);
+      })
+      .withFailureHandler(function (error) {
+        button.disabled = false;
+        setFormMessage(error && error.message ? error.message : 'Student search failed.', true);
+      })
+      .searchStudents(query);
+  }
+
+  function submitAchievement(event) {
+    event.preventDefault();
+    if (!achievementAccess.available || !achievementAccess.canSubmit) {
+      setFormMessage('Your account is not authorized to submit achievements.', true);
+      return;
+    }
+    var form = event.currentTarget;
+    if (!form.reportValidity()) {
+      return;
+    }
+    var button = document.getElementById('submit-achievement');
+    button.disabled = true;
+    setFormMessage('Saving submission…', false);
+    var data = new FormData(form);
+    var payload = {
+      title: data.get('title'),
+      category: data.get('category'),
+      competitionEvent: data.get('competitionEvent'),
+      result: data.get('result'),
+      date: data.get('date'),
+      academicYear: data.get('academicYear'),
+      type: data.get('type'),
+      description: data.get('description'),
+      participantIds: selectedStudents.map(function (student) { return student.studentId; })
+    };
+
+    function sendSubmission() {
+      google.script.run
+        .withSuccessHandler(function (result) {
+          button.disabled = false;
+          form.reset();
+          selectedStudents = [];
+          renderSelectedStudents();
+          document.getElementById('student-results').textContent = '';
+          var retryButton = document.getElementById('retry-achievement-task');
+          retryButton.dataset.achievementId = result.achievementId;
+          retryButton.hidden = result.taskCreated === true;
+          if (result.taskCreated === true) {
+            setFormMessage(
+              'Saved as Pending with an Incoming Social Media task. Reference: ' + result.achievementId +
+              ' (' + result.evidenceCount + ' evidence files attached.)',
+              false
+            );
+            loadSocialMediaTaskBoard();
+          } else {
+            setFormMessage(
+              'Achievement saved as Pending, but its Social Media task was not created. ' +
+              (result.taskError || 'Retry task creation before considering the workflow complete.') +
+              ' Reference: ' + result.achievementId,
+              true
+            );
+          }
+        })
+        .withFailureHandler(function (error) {
+          button.disabled = false;
+          setFormMessage(error && error.message ? error.message : 'Submission could not be saved.', true);
+        })
+        .createAchievementSubmission(payload);
+    }
+
+    var fileInput = document.getElementById('evidence-files');
+    var files = Array.prototype.slice.call(fileInput.files || []);
+    if (!files.length) {
+      button.disabled = false;
+      setFormMessage('Attach at least one evidence file before submitting.', true);
+      return;
+    }
+    if (files.length > 3) {
+      button.disabled = false;
+      setFormMessage('Attach no more than 3 evidence files.', true);
+      return;
+    }
+    var totalBytes = 0;
+    var allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png'];
+    for (var fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      if (!files[fileIndex].name || !allowedMimeTypes.includes(files[fileIndex].type)) {
+        button.disabled = false;
+        setFormMessage('Each evidence file must be a PDF, JPEG or PNG with a filename.', true);
+        return;
+      }
+      if (!files[fileIndex].size || files[fileIndex].size > 1024 * 1024) {
+        button.disabled = false;
+        setFormMessage('Each evidence file must be larger than 0 bytes and no larger than 1 MiB.', true);
+        return;
+      }
+      totalBytes += files[fileIndex].size;
+    }
+    if (totalBytes > 3 * 1024 * 1024) {
+      button.disabled = false;
+      setFormMessage('Combined evidence files cannot exceed 3 MiB.', true);
+      return;
+    }
+
+    var evidenceFiles = [];
+    function readEvidenceFile(index) {
+      if (index >= files.length) {
+        payload.evidenceFiles = evidenceFiles;
+        sendSubmission();
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var dataUrl = typeof reader.result === 'string' ? reader.result : '';
+        var separator = dataUrl.indexOf(',');
+        if (separator < 0 || dataUrl.slice(0, separator).indexOf(';base64') === -1) {
+          button.disabled = false;
+          setFormMessage('An evidence file could not be read. Please select it again.', true);
+          return;
+        }
+        evidenceFiles.push({
+          displayFileName: files[index].name,
+          mimeType: files[index].type,
+          base64: dataUrl.slice(separator + 1)
+        });
+        readEvidenceFile(index + 1);
+      };
+      reader.onerror = function () {
+        button.disabled = false;
+        setFormMessage('An evidence file could not be read. Please select it again.', true);
+      };
+      reader.readAsDataURL(files[index]);
+    }
+    readEvidenceFile(0);
+  }
+
+  function renderReviewQueue(items) {
+    var list = document.getElementById('review-list');
+    list.textContent = '';
+    if (!items.length) {
+      var empty = document.createElement('p');
+      empty.className = 'empty-queue';
+      empty.textContent = 'There are no Pending achievements to review.';
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach(function (achievement) {
+      var card = document.createElement('article');
+      card.className = 'review-card';
+      var heading = document.createElement('div');
+      heading.className = 'review-card-heading';
+      var title = document.createElement('h2');
+      var status = document.createElement('span');
+      title.textContent = achievement.title;
+      status.className = 'status-pill';
+      status.textContent = 'Pending';
+      heading.appendChild(title);
+      heading.appendChild(status);
+      card.appendChild(heading);
+
+      var details = document.createElement('p');
+      details.className = 'review-details';
+      details.textContent = [
+        achievement.category,
+        achievement.competitionEvent,
+        achievement.result,
+        achievement.date,
+        achievement.academicYear,
+        achievement.type,
+        'Submitted by ' + achievement.submittedBy,
+        (achievement.participantNames || []).join(', ')
+      ].filter(Boolean).join(' · ');
+      card.appendChild(details);
+      var description = document.createElement('p');
+      description.className = 'review-description';
+      description.textContent = achievement.description;
+      card.appendChild(description);
+
+      var form = document.createElement('div');
+      form.className = 'review-actions';
+      var notes = document.createElement('textarea');
+      notes.rows = 2;
+      notes.maxLength = 500;
+      notes.required = true;
+      notes.placeholder = 'Review notes (required)';
+      notes.setAttribute('aria-label', 'Review notes for ' + achievement.title);
+      form.appendChild(notes);
+      ['approve', 'reject', 'return'].forEach(function (decision) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = decision === 'approve' ? 'button button-primary' : 'button button-secondary';
+        button.textContent = decision === 'return' ? 'Return for correction' :
+          decision.charAt(0).toUpperCase() + decision.slice(1);
+        if ((decision === 'approve' || decision === 'reject') && !achievement.canDecide) {
+          button.disabled = true;
+          button.title = 'A submitter cannot approve or reject their own achievement unless they are an Administrator.';
+        }
+        button.addEventListener('click', function () {
+          if (!notes.value.trim()) {
+            notes.focus();
+            document.getElementById('review-message').textContent = 'Review notes are required for every decision.';
+            return;
+          }
+          button.disabled = true;
+          google.script.run
+            .withSuccessHandler(function () {
+              document.getElementById('review-message').textContent = 'Review saved and recorded in the audit log.';
+              loadReviewQueue();
+            })
+            .withFailureHandler(function (error) {
+              button.disabled = false;
+              document.getElementById('review-message').textContent =
+                error && error.message ? error.message : 'Review could not be saved.';
+            })
+            .reviewAchievement(achievement.achievementId, decision, notes.value);
+        });
+        form.appendChild(button);
+      });
+      card.appendChild(form);
+      if (achievementAccess.isAdministrator) {
+        var deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'button button-secondary';
+        deleteButton.textContent = 'Delete achievement and linked records';
+        deleteButton.addEventListener('click', function () {
+          if (!window.confirm(
+            'Permanently delete this achievement and its linked sheet records? Drive evidence files will be kept.'
+          )) {
+            return;
+          }
+          deleteButton.disabled = true;
+          google.script.run
+            .withSuccessHandler(function () {
+              document.getElementById('review-message').textContent =
+                'Achievement and linked sheet records were deleted. Drive evidence files were kept; see the Activity Log for the audit trail.';
+              loadReviewQueue();
+            })
+            .withFailureHandler(function (error) {
+              deleteButton.disabled = false;
+              document.getElementById('review-message').textContent =
+                error && error.message ? error.message : 'Achievement deletion failed.';
+            })
+            .deleteAchievement(achievement.achievementId);
+        });
+        card.appendChild(deleteButton);
+      }
+      list.appendChild(card);
+    });
+  }
+
+  function retryAchievementTask() {
+    var button = document.getElementById('retry-achievement-task');
+    var achievementId = button.dataset.achievementId;
+    if (!achievementId) {
+      setFormMessage('There is no saved achievement task to retry.', true);
+      return;
+    }
+    button.disabled = true;
+    google.script.run
+      .withSuccessHandler(function (result) {
+        button.disabled = false;
+        if (result && result.taskId) {
+          button.hidden = true;
+          setFormMessage(
+            'Social Media task ' + result.taskId + ' is available with status ' +
+            (result.status || 'unknown') + ' for achievement ' + achievementId + '.',
+            false
+          );
+          loadSocialMediaTaskBoard();
+        } else {
+          setFormMessage('Task retry did not confirm a task. Retry or contact the administrator.', true);
+        }
+      })
+      .withFailureHandler(function (error) {
+        button.disabled = false;
+        setFormMessage(error && error.message ? error.message : 'Social Media task retry failed.', true);
+      })
+      .retryAchievementSocialMediaTask(achievementId);
+  }
+
+  function loadReviewQueue() {
+    var message = document.getElementById('review-message');
+    if (!achievementAccess.available || !achievementAccess.canReview) {
+      message.textContent = 'The review queue is unavailable until a verifier identity and role are confirmed.';
+      return;
+    }
+
+    message.textContent = 'Loading pending submissions…';
+    google.script.run
+      .withSuccessHandler(function (items) {
+        message.textContent = '';
+        renderReviewQueue(items || []);
+      })
+      .withFailureHandler(function (error) {
+        message.textContent = error && error.message ? error.message : 'The review queue could not be loaded.';
+      })
+      .getAchievementReviewQueue();
+  }
+
+  function getActivityLogFilters() {
+    return {
+      fromDate: document.getElementById('activity-log-from').value,
+      toDate: document.getElementById('activity-log-to').value,
+      actor: document.getElementById('activity-log-actor').value,
+      actionType: document.getElementById('activity-log-action-type').value,
+      outcome: document.getElementById('activity-log-outcome').value,
+      reference: document.getElementById('activity-log-reference').value
+    };
+  }
+
+  function renderActivityLogEntries(entries, append) {
+    var list = document.getElementById('activity-log-list');
+    if (!append) {
+      list.textContent = '';
+    }
+    if (!entries.length && !append) {
+      var empty = document.createElement('p');
+      empty.className = 'empty-queue';
+      empty.textContent = 'No Activity Log entries match these filters.';
+      list.appendChild(empty);
+      return;
+    }
+    entries.forEach(function (entry) {
+      var card = document.createElement('article');
+      card.className = 'review-card activity-log-entry';
+      var heading = document.createElement('div');
+      heading.className = 'review-card-heading';
+      var title = document.createElement('h2');
+      title.textContent = entry.action || 'Recorded SAMS activity';
+      var outcome = document.createElement('span');
+      outcome.className = 'status-pill';
+      outcome.textContent = entry.outcome;
+      heading.appendChild(title);
+      heading.appendChild(outcome);
+      card.appendChild(heading);
+
+      var details = document.createElement('p');
+      details.className = 'review-details';
+      details.textContent = [
+        entry.timestamp + ' (' + entry.timeZone + ')',
+        entry.actorName,
+        entry.actorEmail,
+        entry.actionType,
+        entry.entityType,
+        entry.recordId ? 'Reference ' + entry.recordId : ''
+      ].filter(Boolean).join(' · ');
+      card.appendChild(details);
+      if (entry.details) {
+        var explanation = document.createElement('p');
+        explanation.className = 'review-description';
+        explanation.textContent = entry.details;
+        card.appendChild(explanation);
+      }
+      if (entry.correlationId && entry.correlationId !== entry.recordId) {
+        var correlation = document.createElement('p');
+        correlation.className = 'review-details';
+        correlation.textContent = 'Related reference: ' + entry.correlationId;
+        card.appendChild(correlation);
+      }
+      list.appendChild(card);
+    });
+  }
+
+  function loadActivityLog(reset) {
+    var message = document.getElementById('activity-log-message');
+    var list = document.getElementById('activity-log-list');
+    var moreButton = document.getElementById('activity-log-load-more');
+    if (!achievementAccess.available || !achievementAccess.isAdministrator) {
+      message.textContent = 'Activity Log access is limited to Administrators.';
+      return;
+    }
+    if (reset) {
+      activityLogCursor = null;
+      list.textContent = '';
+    }
+    message.textContent = 'Loading Activity Log entries…';
+    list.setAttribute('aria-busy', 'true');
+    moreButton.disabled = true;
+    var filters = getActivityLogFilters();
+    if (activityLogCursor !== null) {
+      filters.cursor = activityLogCursor;
+    }
+    google.script.run
+      .withSuccessHandler(function (page) {
+        var entries = page && Array.isArray(page.entries) ? page.entries : [];
+        renderActivityLogEntries(entries, !reset);
+        activityLogCursor = page && page.hasMore ? page.nextCursor : null;
+        moreButton.hidden = activityLogCursor === null;
+        moreButton.disabled = false;
+        message.textContent = entries.length
+          ? 'Showing newest entries first. Times use ' + page.timeZone + '.'
+          : 'No Activity Log entries match these filters.';
+        list.setAttribute('aria-busy', 'false');
+      })
+      .withFailureHandler(function (error) {
+        moreButton.disabled = false;
+        message.textContent = error && error.message
+          ? error.message
+          : 'The Activity Log could not be loaded.';
+        list.setAttribute('aria-busy', 'false');
+      })
+      .getActivityLog(filters);
+  }
+
+  function initializeAchievementPages() {
+    if (achievementPagesInitialized) {
+      return;
+    }
+    var requiredElementIds = [
+      'student-directory-search-form',
+      'search-students',
+      'student-search',
+      'achievement-form',
+      'retry-achievement-task',
+      'refresh-reviews',
+      'social-task-create-form',
+      'refresh-social-tasks',
+      'social-task-search',
+      'social-task-filter-status',
+      'social-task-filter-platform',
+      'social-task-filter-assignee',
+      'social-task-filter-priority',
+      'achievement-type',
+      'activity-log-filter-form',
+      'activity-log-from',
+      'activity-log-to',
+      'activity-log-actor',
+      'activity-log-action-type',
+      'activity-log-outcome',
+      'activity-log-reference',
+      'activity-log-list',
+      'activity-log-message',
+      'activity-log-load-more'
+    ];
+    requiredElementIds.forEach(function (id) {
+      if (!document.getElementById(id)) {
+        throw new Error('Cannot initialize SAMS page; required element "' + id + '" is missing.');
+      }
+    });
+    achievementPagesInitialized = true;
+    initializeNavigation();
+    initializeStudentsPage();
+    document.getElementById('search-students').addEventListener('click', searchForStudents);
+    document.getElementById('student-search').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        searchForStudents();
+      }
+    });
+    document.getElementById('achievement-form').addEventListener('submit', submitAchievement);
+    document.getElementById('retry-achievement-task').addEventListener('click', retryAchievementTask);
+    document.getElementById('refresh-reviews').addEventListener('click', loadReviewQueue);
+    document.getElementById('social-task-create-form').addEventListener('submit', createSocialMediaTask);
+    document.getElementById('refresh-social-tasks').addEventListener('click', loadSocialMediaPage);
+    document.getElementById('activity-log-filter-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      loadActivityLog(true);
+    });
+    document.getElementById('activity-log-load-more').addEventListener('click', function () {
+      loadActivityLog(false);
+    });
+    [
+      'social-task-search',
+      'social-task-filter-status',
+      'social-task-filter-platform',
+      'social-task-filter-assignee',
+      'social-task-filter-priority'
+    ].forEach(function (id) {
+      document.getElementById(id).addEventListener(
+        id === 'social-task-search' ? 'input' : 'change',
+        renderSocialMediaTasks
+      );
+    });
+    document.getElementById('achievement-type').addEventListener('change', function () {
+      if (this.value === 'Individual' && selectedStudents.length > 1) {
+        setFormMessage('Remove all but one selected student before using Individual type.', true);
+      }
+    });
+    var requestedPage = pageForHash(window.location.hash);
+    showPage(requestedPage);
+    if (requestedPage === 'students') {
+      document.getElementById('student-directory-query').focus();
+    } else if (requestedPage === 'reviews') {
+      loadReviewQueue();
+    } else if (requestedPage === 'social-media') {
+      loadSocialMediaPage();
+    } else if (requestedPage === 'activity-log' && achievementAccess.isAdministrator) {
+      loadActivityLog(true);
+    }
+    loadDashboardSummary();
+    loadAchievementAccess();
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    checkSpreadsheetDiagnostic();
+    initializeAchievementPages();
+  });
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      applyAchievementAccess: applyAchievementAccess,
+      renderDashboardSummary: renderDashboardSummary,
+      taskMatchesFilters: taskMatchesFilters,
+      socialMediaMutationAllowed: socialMediaMutationAllowed,
+      getSocialMediaTaskCounts: getSocialMediaTaskCounts,
+      appendTaskCard: appendTaskCard,
+      loadSocialMediaTaskBoard: loadSocialMediaTaskBoard,
+      pageForHash: pageForHash,
+      renderStudentHistory: renderStudentHistory,
+      searchStudentsFromPage: searchStudentsFromPage,
+      initializeStudentsPage: initializeStudentsPage,
+      initializeAchievementPages: initializeAchievementPages,
+      loadActivityLog: loadActivityLog,
+      renderActivityLogEntries: renderActivityLogEntries
+    };
+  }
+</script>

@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Student Achievement Management System</title>
+    <?!= HtmlService.createHtmlOutputFromFile('Styles').getContent(); ?>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Main navigation">
+        <a class="brand" href="#overview" aria-label="SAMS overview">
+          <span class="brand-mark" aria-hidden="true">S</span>
+          <span class="brand-name">SAMS<span class="brand-caption">STUDENT SERVICES</span></span>
+        </a>
+
+        <div class="nav-group">
+          <p class="nav-heading">WORKSPACE</p>
+          <a class="nav-link is-active" href="#overview" data-page="overview" aria-current="page">
+            <span class="nav-symbol" aria-hidden="true">01</span> Overview
+          </a>
+          <a class="nav-link" href="#students" data-page="students">
+            <span class="nav-symbol" aria-hidden="true">02</span> Students
+          </a>
+          <a class="nav-link" href="#achievements" data-page="submit">
+            <span class="nav-symbol" aria-hidden="true">03</span> Achievements
+          </a>
+          <a class="nav-link" href="#reviews" data-page="reviews">
+            <span class="nav-symbol" aria-hidden="true">04</span> Reviews
+          </a>
+          <a class="nav-link" href="#social-media" data-page="social-media">
+            <span class="nav-symbol" aria-hidden="true">05</span> Social media
+          </a>
+          <a class="nav-link" href="#activity-log" data-page="activity-log" hidden>
+            <span class="nav-symbol" aria-hidden="true">06</span> Activity Log
+          </a>
+        </div>
+
+        <div class="sidebar-note">
+          <span class="note-dot" aria-hidden="true"></span>
+          <div>
+            <strong>Foundation release</strong>
+            <span>Workspace setup in progress</span>
+          </div>
+        </div>
+        <p class="sidebar-footer">SAMS <span>.</span> BATCH 05</p>
+      </aside>
+
+      <main class="main-content" id="main-content">
+        <header class="topbar">
+          <div class="breadcrumb">Workspace <span>/</span> Overview</div>
+          <div class="connection" id="connection-status" role="status" aria-live="polite">
+            <span class="connection-dot" aria-hidden="true"></span>
+            <span id="connection-label">Checking connection</span>
+          </div>
+        </header>
+
+        <div class="app-page" id="overview-page">
+        <div class="security-notice" id="access-notice" role="status" aria-live="polite" hidden></div>
+        <section class="page-intro" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow">STUDENT SERVICES / OVERVIEW</p>
+            <h1 id="page-title">Student Achievement<br class="title-break"> Management System</h1>
+            <p class="intro-copy">A clear starting point for recognizing student progress.</p>
+          </div>
+          <div class="intro-index" aria-hidden="true"><span>01</span><span>04</span></div>
+        </section>
+
+        <section class="summary-section" aria-labelledby="summary-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">AT A GLANCE</p>
+              <h2 id="summary-title">Workspace summary</h2>
+            </div>
+            <span class="section-note" id="summary-message" role="status" aria-live="polite">Loading summary</span>
+          </div>
+
+          <div class="summary-grid">
+            <article class="summary-card card-green">
+              <div class="card-topline"><span>STUDENTS</span><span class="card-index">01</span></div>
+              <p class="card-value" id="summary-students">--</p>
+              <p class="card-caption">Student records</p>
+              <span class="card-accent" aria-hidden="true"></span>
+            </article>
+            <article class="summary-card card-coral">
+              <div class="card-topline"><span>ACHIEVEMENTS</span><span class="card-index">02</span></div>
+              <p class="card-value" id="summary-achievements">--</p>
+              <p class="card-caption">Achievements logged</p>
+              <span class="card-accent" aria-hidden="true"></span>
+            </article>
+            <article class="summary-card card-blue">
+              <div class="card-topline"><span>REVIEWS</span><span class="card-index">03</span></div>
+              <p class="card-value" id="summary-reviews">--</p>
+              <p class="card-caption">Items awaiting review</p>
+              <span class="card-accent" aria-hidden="true"></span>
+            </article>
+            <article class="summary-card card-yellow">
+              <div class="card-topline"><span>SOCIAL MEDIA</span><span class="card-index">04</span></div>
+              <p class="card-value" id="summary-social-tasks">--</p>
+              <p class="card-caption"><span id="summary-stories">--</span> story assets</p>
+              <span class="card-accent" aria-hidden="true"></span>
+            </article>
+          </div>
+        </section>
+
+        <section class="status-section" aria-labelledby="status-title">
+          <div class="status-copy">
+            <p class="eyebrow">SYSTEM STATUS</p>
+            <h2 id="status-title">Checking spreadsheet setup</h2>
+            <p id="diagnostic-message" aria-live="polite">Connecting to the configured spreadsheet and checking its tabs.</p>
+            <ul class="schema-results" id="schema-results" aria-live="polite" aria-busy="true"></ul>
+          </div>
+          <div class="status-visual" aria-hidden="true">
+            <span class="status-ring ring-one"></span>
+            <span class="status-ring ring-two"></span>
+            <span class="status-center">S</span>
+            <span class="status-label">READY TO BUILD</span>
+          </div>
+        </section>
+        </div>
+
+        <div class="app-page" id="students-page" hidden>
+          <section class="page-intro compact-intro" aria-labelledby="students-title">
+            <div>
+              <p class="eyebrow">STUDENT SERVICES / DIRECTORY</p>
+              <h1 id="students-title">Students</h1>
+              <p class="intro-copy">Search active student records and view achievement history.</p>
+            </div>
+          </section>
+          <section class="form-panel" aria-label="Student directory search">
+            <form id="student-directory-search-form">
+              <label class="form-field" for="student-directory-query">Search students</label>
+              <div class="student-search">
+                <input id="student-directory-query" type="search" autocomplete="off"
+                  placeholder="Search by name, StudentID or roll number" maxlength="100">
+                <button class="button button-primary" id="student-directory-search-button" type="submit">Search</button>
+              </div>
+            </form>
+            <p class="queue-message" id="students-page-message" role="status" aria-live="polite">
+              Enter a name, StudentID or roll number to search active students.
+            </p>
+            <section class="student-directory-results" id="student-directory-results"
+              aria-label="Student search results" aria-live="polite" aria-busy="false"></section>
+          </section>
+        </div>
+
+        <div class="app-page" id="submit-page" hidden>
+          <section class="page-intro compact-intro" aria-labelledby="submit-title">
+            <div>
+              <p class="eyebrow">STUDENT SERVICES / ACHIEVEMENTS</p>
+              <h1 id="submit-title">Submit an achievement</h1>
+              <p class="intro-copy">Record a student achievement for verification.</p>
+            </div>
+          </section>
+          <section class="form-panel" aria-label="Achievement submission">
+            <form id="achievement-form">
+              <div class="form-grid">
+                <label class="form-field">Title
+                  <input name="title" type="text" maxlength="200" required>
+                </label>
+                <label class="form-field">Category
+                  <input name="category" type="text" maxlength="100" required>
+                </label>
+                <label class="form-field">Competition / event
+                  <input name="competitionEvent" type="text" maxlength="200" required>
+                </label>
+                <label class="form-field">Result
+                  <input name="result" type="text" maxlength="100" required>
+                </label>
+                <label class="form-field">Date
+                  <input name="date" type="date" required>
+                </label>
+                <label class="form-field">Academic year
+                  <input name="academicYear" type="text" inputmode="numeric" placeholder="2025-2026" pattern="[0-9]{4}-[0-9]{4}" required>
+                </label>
+                <label class="form-field">Achievement type
+                  <select name="type" id="achievement-type" required>
+                    <option value="Individual">Individual</option>
+                    <option value="Team">Team</option>
+                  </select>
+                </label>
+                <label class="form-field full-width">Description
+                  <textarea name="description" rows="4" maxlength="5000" required></textarea>
+                </label>
+              </div>
+
+              <div class="participant-section">
+                <label class="form-field" for="student-search">Participating students</label>
+                <div class="student-search">
+                  <input id="student-search" type="search" autocomplete="off" placeholder="Search by name, StudentID or roll number">
+                  <button class="button button-secondary" id="search-students" type="button">Search</button>
+                </div>
+                <p class="field-hint" id="participant-hint">Individual achievements require one active student; team achievements may include several.</p>
+                <ul class="student-results" id="student-results" aria-live="polite"></ul>
+                <ul class="selected-students" id="selected-students" aria-label="Selected students"></ul>
+              </div>
+
+              <div class="evidence-panel">
+                <label class="form-field" for="evidence-files">Evidence files</label>
+                <input id="evidence-files" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple required aria-describedby="evidence-files-hint">
+                <p class="field-hint" id="evidence-files-hint">Attach a certificate, a photo of the student receiving or participating in the achievement, or both. Any one valid PDF, JPEG or PNG is sufficient; additional files are optional. Up to 3 files; each must be no larger than 1 MiB and all files together no larger than 3 MiB.</p>
+              </div>
+
+              <p class="security-notice page-access-message" id="submit-access-message" role="status" aria-live="polite" hidden></p>
+              <p class="form-message" id="submission-message" role="status" aria-live="polite"></p>
+              <button class="button button-secondary" id="retry-achievement-task" type="button" hidden>Retry Social Media task creation</button>
+              <button class="button button-primary" id="submit-achievement" type="submit" disabled>Save as pending</button>
+            </form>
+          </section>
+        </div>
+
+        <div class="app-page" id="reviews-page" hidden>
+          <section class="page-intro compact-intro" aria-labelledby="reviews-title">
+            <div>
+              <p class="eyebrow">STUDENT SERVICES / VERIFICATION</p>
+              <h1 id="reviews-title">Achievement reviews</h1>
+              <p class="intro-copy">Review pending submissions and record a decision.</p>
+            </div>
+            <button class="button button-secondary" id="refresh-reviews" type="button" disabled>Refresh queue</button>
+          </section>
+          <p class="security-notice page-access-message" id="reviews-access-message" role="status" aria-live="polite" hidden></p>
+          <div class="queue-message" id="review-message" role="status" aria-live="polite"></div>
+          <section class="review-list" id="review-list" aria-label="Pending achievement submissions"></section>
+        </div>
+
+        <div class="app-page" id="social-media-page" hidden>
+          <section class="page-intro compact-intro" aria-labelledby="social-media-title">
+            <div>
+              <p class="eyebrow">STUDENT SERVICES / COMMUNICATIONS</p>
+              <h1 id="social-media-title">Social media tasks</h1>
+              <p class="intro-copy">Coordinate approved achievement stories for manual publication.</p>
+            </div>
+            <button class="button button-secondary" id="refresh-social-tasks" type="button">Refresh tasks</button>
+          </section>
+          <p class="security-notice" id="social-media-access-message" role="status" aria-live="polite" hidden></p>
+          <section class="summary-section task-summary-section" aria-label="Social media task counts">
+            <div class="task-count-grid" id="social-task-counts"></div>
+          </section>
+
+          <section class="form-panel social-task-create" id="social-task-create-panel" aria-labelledby="create-task-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">CONTROLLED WORKFLOW</p>
+                <h2 id="create-task-title">Create a task</h2>
+              </div>
+              <span class="section-note">Only Verified achievements are eligible</span>
+            </div>
+            <form id="social-task-create-form">
+              <div class="form-grid">
+                <label class="form-field full-width">Approved achievement
+                  <select id="social-task-achievement" required>
+                    <option value="">Select a Verified achievement</option>
+                  </select>
+                </label>
+                <label class="form-field">Platform
+                  <input id="social-task-platform" type="text" maxlength="40" placeholder="Instagram" required>
+                </label>
+                <label class="form-field">Priority
+                  <select id="social-task-priority">
+                    <option>Normal</option><option>Low</option><option>High</option><option>Urgent</option>
+                  </select>
+                </label>
+                <label class="form-field">Due date
+                  <input id="social-task-due-date" type="date">
+                </label>
+              </div>
+              <p class="field-hint">Tasks are created only when requested. One task per achievement and platform.</p>
+              <p class="form-message" id="social-task-create-message" role="status" aria-live="polite"></p>
+              <button class="button button-primary" id="create-social-task" type="submit" disabled>Create task</button>
+            </form>
+          </section>
+
+          <section class="task-filter-panel" aria-label="Filter tasks">
+            <label class="form-field">Search tasks
+              <input id="social-task-search" type="search" placeholder="Search achievement, platform, assignee or caption">
+            </label>
+            <label class="form-field">Status
+              <select id="social-task-filter-status"><option value="">All statuses</option></select>
+            </label>
+            <label class="form-field">Platform
+              <select id="social-task-filter-platform"><option value="">All platforms</option></select>
+            </label>
+            <label class="form-field">Assignee
+              <select id="social-task-filter-assignee"><option value="">All assignees</option></select>
+            </label>
+            <label class="form-field">Priority
+              <select id="social-task-filter-priority"><option value="">All priorities</option></select>
+            </label>
+          </section>
+          <div class="queue-message" id="social-task-list-message" role="status" aria-live="polite"></div>
+          <section class="review-list social-task-list" id="social-task-list" aria-label="Social media tasks" aria-live="polite" aria-busy="false"></section>
+          <p class="field-hint">Publication-proof review and task completion are disabled. A task cannot be completed through this app.</p>
+        </div>
+
+        <div class="app-page" id="activity-log-page" hidden>
+          <section class="page-intro compact-intro" aria-labelledby="activity-log-title">
+            <div>
+              <p class="eyebrow">ADMINISTRATION / RECORD KEEPING</p>
+              <h1 id="activity-log-title">Activity Log</h1>
+              <p class="intro-copy">Review recorded SAMS actions. Entries are read-only.</p>
+            </div>
+          </section>
+          <p class="security-notice" id="activity-log-access-message" role="status" aria-live="polite" hidden></p>
+          <form class="task-filter-panel activity-log-filters" id="activity-log-filter-form" aria-label="Filter Activity Log">
+            <label class="form-field">From
+              <input id="activity-log-from" type="date">
+            </label>
+            <label class="form-field">To
+              <input id="activity-log-to" type="date">
+            </label>
+            <label class="form-field">Actor
+              <input id="activity-log-actor" type="search" maxlength="100" placeholder="Name, email or user ID">
+            </label>
+            <label class="form-field">Action type
+              <select id="activity-log-action-type">
+                <option value="">All actions</option>
+                <option>Achievement submission</option>
+                <option>Achievement decision</option>
+                <option>Achievement deletion</option>
+                <option>Evidence upload</option>
+                <option>Social Media task creation</option>
+                <option>Social Media task assignment</option>
+                <option>Social Media task status</option>
+                <option>Social Media task retry</option>
+                <option>Access denied</option>
+                <option>Protected-field modification denied</option>
+              </select>
+            </label>
+            <label class="form-field">Outcome
+              <select id="activity-log-outcome">
+                <option value="">All outcomes</option>
+                <option>Successful</option>
+                <option>Failed</option>
+                <option>Denied</option>
+                <option>Recorded</option>
+              </select>
+            </label>
+            <label class="form-field">Achievement or task reference
+              <input id="activity-log-reference" type="search" maxlength="100" placeholder="ID or description">
+            </label>
+            <button class="button button-primary" id="activity-log-filter-button" type="submit">Apply filters</button>
+          </form>
+          <p class="queue-message" id="activity-log-message" role="status" aria-live="polite"></p>
+          <section class="review-list activity-log-list" id="activity-log-list" aria-label="Activity Log entries" aria-live="polite" aria-busy="false"></section>
+          <button class="button button-secondary" id="activity-log-load-more" type="button" hidden>Load older entries</button>
+        </div>
+
+        <footer class="page-footer">
+          <span>Student Achievement Management System</span>
+          <span>Foundation release <span class="footer-separator">/</span> Batch 05</span>
+        </footer>
+      </main>
+    </div>
+    <?!= HtmlService.createHtmlOutputFromFile('JavaScript').getContent(); ?>
+  </body>
+</html>
